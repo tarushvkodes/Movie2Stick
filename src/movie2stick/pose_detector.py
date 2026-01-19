@@ -91,6 +91,8 @@ class PoseKeypoints:
         self.landmarks = landmarks
         self.visibility = visibility
         self.image_height, self.image_width = image_shape
+        self.face_landmarks = None  # To store face mesh landmarks
+        self.face_blendshapes = None  # To store face expression coefficients
         
     def get_point(self, idx: int, pixel_coords: bool = True) -> Optional[Tuple[int, int]]:
         """Get a specific landmark point.
@@ -405,3 +407,84 @@ class MultiPoseDetector:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
         return False
+
+
+class FaceDetector:
+    """Real-time face detector using MediaPipe FaceLandmarker."""
+    
+    MODEL_URL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
+    
+    def __init__(
+        self,
+        min_detection_confidence: float = 0.5,
+        min_tracking_confidence: float = 0.5,
+    ):
+        if not MEDIAPIPE_AVAILABLE:
+            raise ImportError("MediaPipe is required. Install with: pip install mediapipe")
+            
+        self.min_detection_confidence = min_detection_confidence
+        self.min_tracking_confidence = min_tracking_confidence
+        
+        # Download model
+        model_path = self._get_model_path()
+        
+        # Create FaceLandmarker
+        BaseOptions = mp.tasks.BaseOptions
+        FaceLandmarker = mp.tasks.vision.FaceLandmarker
+        FaceLandmarkerOptions = mp.tasks.vision.FaceLandmarkerOptions
+        VisionRunningMode = mp.tasks.vision.RunningMode
+        
+        options = FaceLandmarkerOptions(
+            base_options=BaseOptions(model_asset_path=model_path),
+            running_mode=VisionRunningMode.IMAGE,
+            min_face_detection_confidence=min_detection_confidence,
+            min_tracking_confidence=min_tracking_confidence,
+            num_faces=5,
+            output_face_blendshapes=True,
+        )
+        
+        self.landmarker = FaceLandmarker.create_from_options(options)
+        
+    def _get_model_path(self) -> str:
+        """Get or download the face model file."""
+        import os
+        import urllib.request
+        import ssl
+        
+        cache_dir = os.path.expanduser("~/.cache/movie2stick/models")
+        os.makedirs(cache_dir, exist_ok=True)
+        
+        model_name = "face_landmarker.task"
+        model_path = os.path.join(cache_dir, model_name)
+        
+        if os.path.exists(model_path):
+            return model_path
+            
+        print(f"Downloading face model: {model_name}...")
+        try:
+            # Create an SSL context that doesn't verify certificates
+            context = ssl.create_default_context()
+            
+            request = urllib.request.Request(
+                self.MODEL_URL,
+                headers={'User-Agent': 'Mozilla/5.0 (Movie2Stick)'}
+            )
+            with urllib.request.urlopen(request, context=context, timeout=120) as response:
+                with open(model_path, 'wb') as f:
+                    f.write(response.read())
+            return model_path
+        except Exception as e:
+            print(f"Error downloading face model: {e}")
+            raise
+
+    def detect(self, frame: np.ndarray):
+        """Detect faces in a frame."""
+        # Convert BGR to RGB
+        rgb_frame = frame[:, :, ::-1].copy()
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+        return self.landmarker.detect(mp_image)
+
+    def close(self):
+        if hasattr(self, 'landmarker') and self.landmarker:
+            self.landmarker.close()
+

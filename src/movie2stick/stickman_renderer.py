@@ -37,6 +37,8 @@ class StickmanStyle:
         head_radius_factor: float = 0.15,
         draw_head_circle: bool = True,
         draw_joints: bool = True,
+        eye_color: Tuple[int, int, int] = (255, 255, 255),
+        mouth_color: Tuple[int, int, int] = (255, 255, 255),
     ):
         """Initialize stickman style.
         
@@ -58,6 +60,8 @@ class StickmanStyle:
         self.head_radius_factor = head_radius_factor
         self.draw_head_circle = draw_head_circle
         self.draw_joints = draw_joints
+        self.eye_color = eye_color
+        self.mouth_color = mouth_color
     
     @classmethod
     def from_palette(cls, palette_index: int, **kwargs) -> "StickmanStyle":
@@ -126,6 +130,7 @@ class StickmanRenderer:
         poses: List[PoseKeypoints],
         styles: Optional[List[StickmanStyle]] = None,
         character_ids: Optional[List[int]] = None,
+        background_image: Optional[np.ndarray] = None,
     ) -> np.ndarray:
         """Render stickman figures for all detected poses.
         
@@ -134,12 +139,19 @@ class StickmanRenderer:
             poses: List of PoseKeypoints objects
             styles: Optional list of styles for each pose (uses default if not provided)
             character_ids: Optional list of character IDs for consistent styling
+            background_image: Optional image to use as background
             
         Returns:
             Rendered frame with stickman figures
         """
-        # Create blank frame with background color
-        output = np.full(frame_shape, self.background_color, dtype=np.uint8)
+        # Create frame
+        if background_image is not None:
+            output = background_image.copy()
+            # Ensure it matches target shape if needed (though usually caller handles this)
+            if output.shape != frame_shape:
+                output = cv2.resize(output, (frame_shape[1], frame_shape[0]))
+        else:
+            output = np.full(frame_shape, self.background_color, dtype=np.uint8)
         
         for i, pose in enumerate(poses):
             # Determine style
@@ -258,7 +270,17 @@ class StickmanRenderer:
         # Draw head circle
         if style.draw_head_circle and head:
             head_radius = max(int(torso_height * style.head_radius_factor), 10)
-            cv2.circle(frame, head, head_radius, style.head_color, style.line_thickness)
+        # Draw head circle and face
+        if style.draw_head_circle and head:
+            head_radius = max(int(torso_height * style.head_radius_factor), 10)
+            # Draw head background (filled)
+            cv2.circle(frame, head, head_radius, style.head_color, -1)
+            # Draw head outline
+            cv2.circle(frame, head, head_radius, style.body_color, style.line_thickness)
+            
+            # Draw face features if available
+            if hasattr(pose, 'face_landmarks') and pose.face_landmarks is not None:
+                self._draw_face_features(frame, pose, style, head, head_radius)
         
         # Draw joint circles
         if style.draw_joints:
@@ -275,3 +297,139 @@ class StickmanRenderer:
                 point = pose.get_point(idx)
                 if point:
                     cv2.circle(frame, point, style.joint_radius, style.joint_color, -1)
+
+    def _draw_face_features(self, frame, pose, style, head_center, head_radius):
+        """Draw eyes and mouth based on face landmarks."""
+        # Map normalized face landmarks to pixel coordinates relative to the head position
+        # We use a simplified mapping assuming the face is centered on the nose keypoint
+        
+        # Landmarks indices (MediaPipe Face Mesh 468)
+        # Left Eye: 33 (inner), 133 (outer), 159 (top), 145 (bottom)
+        # Right Eye: 362 (inner), 263 (outer), 386 (top), 374 (bottom)
+        # Mouth: 61 (left), 291 (right), 13 (upper), 14 (lower)
+        
+        # Scaling factor to fit face landmarks into stickman head
+        # We can't map 1:1 because stickman head might be different size/orientation
+        # So we estimate relative positions
+        
+        if pose.face_blendshapes:
+            # unique blendshapes usage
+            pass
+            
+        # Simplified drawing:
+        # Calculate eye positions relative to nose (index 1 of face mesh usually)
+        # But face_landmarks[1] is nose tip.
+        
+        landmarks = pose.face_landmarks
+        h, w = frame.shape[:2]
+        
+        # Safe access helper
+        def get_lm(idx):
+             if idx < len(landmarks):
+                 return landmarks[idx]
+             return None
+
+        # Nose tip
+        nose = get_lm(1)
+        if nose is None: return
+
+        # Calculate bounding box of face to normalize
+        # Or just project directly if aligned?
+        # Let's project directly but scale to head_radius
+        
+        # Face bounding box approximation
+        # We need to scale the face landmarks to fit inside our drawn head circle
+        # The nose (head_center) matches landmarks[1]
+        
+        # Approx face scale from landmarks (e.g., eye distance)
+        left_eye_outer = get_lm(33)
+        right_eye_outer = get_lm(263)
+        
+        if left_eye_outer is None or right_eye_outer is None: return
+        
+        # Real distance
+        eye_dist = np.linalg.norm(np.array([left_eye_outer.x, left_eye_outer.y]) - np.array([right_eye_outer.x, right_eye_outer.y]))
+        
+        # If eye_dist is 0 (impossible), skip
+        if eye_dist < 0.001: return
+        
+        # Desired eye distance in stickman head (e.g., 40% of diameter)
+        target_eye_dist = head_radius * 0.8
+        
+        scale = target_eye_dist / eye_dist
+        
+        # Transform function
+        def transform(lm):
+            # Center relative to nose
+            rel_x = lm.x - nose.x
+            rel_y = lm.y - nose.y
+            
+            # Scale
+            # Correct aspect ratio
+            scaled_x = rel_x * scale #* (w/h if normalized? No, x/y are normalized 0-1)
+            # wait, x is * width, y is * height.
+            # We need to handle aspect ratio
+            
+            # Convert to pixels relative to head center
+            px = int(head_center[0] + rel_x * scale * w) # Rough approx
+            # Better:
+            # We want isotropic scaling in pixel space.
+            # Convert lm to pixels first
+            lm_px_x = lm.x * w
+            lm_px_y = lm.y * h
+            nose_px_x = nose.x * w
+            nose_px_y = nose.y * h
+            
+            dx = lm_px_x - nose_px_x
+            dy = lm_px_y - nose_px_y
+            
+            # Scale factor based on pixel distance
+            pixel_eye_dist = eye_dist * w # approx
+            scale_factor = target_eye_dist / pixel_eye_dist
+            
+            return (int(head_center[0] + dx * scale_factor), int(head_center[1] + dy * scale_factor))
+
+        # Draw Left Eye
+        # simple circle or ellipse based on open/closed
+        l_eye_top = get_lm(159)
+        l_eye_bot = get_lm(145)
+        if l_eye_top and l_eye_bot:
+             l_top = transform(l_eye_top)
+             l_bot = transform(l_eye_bot)
+             l_height = np.linalg.norm(np.array(l_top) - np.array(l_bot))
+             l_center = ((l_top[0]+l_bot[0])//2, (l_top[1]+l_bot[1])//2)
+             
+             # If eye is open
+             if l_height > 2:
+                 cv2.circle(frame, l_center, max(int(head_radius * 0.15), 2), style.eye_color, -1)
+             else:
+                 cv2.line(frame, l_top, l_bot, style.eye_color, 2)
+        
+        # Draw Right Eye
+        r_eye_top = get_lm(386)
+        r_eye_bot = get_lm(374)
+        if r_eye_top and r_eye_bot:
+             r_top = transform(r_eye_top)
+             r_bot = transform(r_eye_bot)
+             r_height = np.linalg.norm(np.array(r_top) - np.array(r_bot))
+             r_center = ((r_top[0]+r_bot[0])//2, (r_top[1]+r_bot[1])//2)
+             
+             if r_height > 2:
+                 cv2.circle(frame, r_center, max(int(head_radius * 0.15), 2), style.eye_color, -1)
+             else:
+                 cv2.line(frame, r_top, r_bot, style.eye_color, 2)
+
+        # Draw Mouth
+        # Lips: 61, 146, 291, 375 (outer loop)
+        mouth_indices = [61, 81, 178, 87, 14, 317, 402, 311, 291] # Lower lip line approx
+        mouth_pts = []
+        for idx in mouth_indices:
+             lm = get_lm(idx)
+             if lm:
+                 mouth_pts.append(transform(lm))
+        
+        if len(mouth_pts) > 1:
+            # Draw curve
+            pts = np.array(mouth_pts, np.int32)
+            cv2.polylines(frame, [pts], False, style.mouth_color, 2)
+

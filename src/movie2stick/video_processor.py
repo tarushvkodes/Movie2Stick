@@ -23,7 +23,7 @@ try:
 except ImportError:
     PYVIRTUALCAM_AVAILABLE = False
 
-from movie2stick.pose_detector import PoseDetector, MultiPoseDetector
+from movie2stick.pose_detector import PoseDetector, MultiPoseDetector, FaceDetector
 from movie2stick.stickman_renderer import StickmanRenderer, StickmanStyle
 from movie2stick.character_tracker import CharacterTracker
 
@@ -59,6 +59,7 @@ class VideoProcessor:
         enable_virtual_camera: bool = True,
         show_preview: bool = True,
         overlay_mode: bool = False,
+        stylized_background: bool = False,
         model_complexity: int = 1,
     ):
         """Initialize the video processor.
@@ -88,11 +89,14 @@ class VideoProcessor:
         self.output_fps = output_fps
         self.enable_virtual_camera = enable_virtual_camera
         self.show_preview = show_preview
+        self.show_preview = show_preview
         self.overlay_mode = overlay_mode
+        self.stylized_background = stylized_background
         self.model_complexity = model_complexity
         
         # Components (initialized in start())
         self.pose_detector: Optional[PoseDetector] = None
+        self.face_detector: Optional[FaceDetector] = None
         self.renderer: Optional[StickmanRenderer] = None
         self.tracker: Optional[CharacterTracker] = None
         self.virtual_camera = None
@@ -109,6 +113,12 @@ class VideoProcessor:
         # Initialize pose detector
         self.pose_detector = PoseDetector(
             model_complexity=self.model_complexity,
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5,
+        )
+
+        # Initialize face detector
+        self.face_detector = FaceDetector(
             min_detection_confidence=0.5,
             min_tracking_confidence=0.5,
         )
@@ -233,6 +243,47 @@ class VideoProcessor:
         # Detect poses
         poses = self.pose_detector.detect(frame)
         
+        # Detect faces (if we have poses)
+        if poses:
+            face_result = self.face_detector.detect(frame)
+            if face_result.face_landmarks:
+                # Match faces to poses based on nose proximity
+                # Pose nose is index 0. Face mesh nose tip is index 1.
+                # However, normalized coordinates need to be converted to pixels for distance
+                h, w = frame.shape[:2]
+                
+                occupied_faces = set()
+                
+                for pose in poses:
+                    pose_nose = pose.get_point(0, pixel_coords=True) # Nose
+                    if not pose_nose:
+                        continue
+                        
+                    best_face_idx = -1
+                    min_dist = float('inf')
+                    
+                    for i, face_lms in enumerate(face_result.face_landmarks):
+                        if i in occupied_faces:
+                            continue
+                            
+                        # Face nose tip is index 1
+                        face_nose = face_lms[1]
+                        face_x, face_y = int(face_nose.x * w), int(face_nose.y * h)
+                        
+                        dist = ((pose_nose[0] - face_x)**2 + (pose_nose[1] - face_y)**2)**0.5
+                        
+                        # Threshold for matching (e.g. 50% of image width is too far, but let's say 10% is good)
+                        # Actually depends on face size, but simple distance is a good start
+                        if dist < min_dist and dist < w * 0.2: 
+                            min_dist = dist
+                            best_face_idx = i
+                    
+                    if best_face_idx != -1:
+                        pose.face_landmarks = face_result.face_landmarks[best_face_idx]
+                        if face_result.face_blendshapes:
+                            pose.face_blendshapes = face_result.face_blendshapes[best_face_idx]
+                        occupied_faces.add(best_face_idx)
+        
         # Update tracking
         character_ids = self.tracker.update(poses)
         
@@ -250,10 +301,36 @@ class VideoProcessor:
                 character_ids=color_indices,
             )
         else:
+            background_img = None
+            if self.stylized_background:
+                # Creative "Cartoon" Background
+                # 1. Bilateral Filter to smooth textures but keep edges
+                # (d=9, sigmaColor=75, sigmaSpace=75 is slow but good. faster: d=5)
+                # For real-time, we might need to downscale
+                small = cv2.resize(frame, (0,0), fx=0.5, fy=0.5)
+                filtered = cv2.bilateralFilter(small, 5, 50, 50)
+                
+                # 2. Edge detection
+                gray = cv2.cvtColor(filtered, cv2.COLOR_BGR2GRAY)
+                # Adaptive threshold for "sketch" look
+                edges = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, 9, 2)
+                
+                # 3. Combine
+                # Edges are black on white. We want to apply them to the colored image.
+                # Convert edges to BGR
+                edges_bgr = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
+                
+                # Bitwise AND to apply edges
+                cartoon = cv2.bitwise_and(filtered, edges_bgr)
+                
+                # Upscale back
+                background_img = cv2.resize(cartoon, (frame.shape[1], frame.shape[0]))
+                
             output = self.renderer.render(
                 frame.shape,
                 poses,
                 character_ids=color_indices,
+                background_image=background_img,
             )
         
         self.frame_count += 1
@@ -339,6 +416,10 @@ class VideoProcessor:
         if self.pose_detector:
             self.pose_detector.close()
             self.pose_detector = None
+            
+        if self.face_detector:
+            self.face_detector.close()
+            self.face_detector = None
         
         cv2.destroyAllWindows()
         

@@ -76,6 +76,11 @@ if CLICK_AVAILABLE:
         help="Overlay stickman on original video (default: disabled)"
     )
     @click.option(
+        "--stylized-background/--no-stylized-background",
+        default=False,
+        help="Show stylized edge-detected background (default: disabled)"
+    )
+    @click.option(
         "--model-complexity",
         type=click.Choice(["0", "1", "2"]),
         default="1",
@@ -97,6 +102,7 @@ if CLICK_AVAILABLE:
         virtual_camera: bool,
         preview: bool,
         overlay: bool,
+        stylized_background: bool,
         model_complexity: str,
         region: Optional[str],
     ):
@@ -150,6 +156,7 @@ if CLICK_AVAILABLE:
         click.echo(f"  Virtual camera: {'Enabled' if virtual_camera else 'Disabled'}")
         click.echo(f"  Preview: {'Enabled' if preview else 'Disabled'}")
         click.echo(f"  Overlay mode: {'Enabled' if overlay else 'Disabled'}")
+        click.echo(f"  Stylized background: {'Enabled' if stylized_background else 'Disabled'}")
         click.echo(f"  Model complexity: {model_complexity}")
         
         click.echo("\nStarting... Press 'q' or ESC to quit.\n")
@@ -166,6 +173,7 @@ if CLICK_AVAILABLE:
                 enable_virtual_camera=virtual_camera,
                 show_preview=preview,
                 overlay_mode=overlay,
+                stylized_background=stylized_background,
                 model_complexity=int(model_complexity),
             )
             processor.run()

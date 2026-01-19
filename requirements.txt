@@ -1,0 +1,24 @@
+# Movie2Stick - Real-time Stickman Video Filter
+# Core dependencies
+
+# Pose estimation
+mediapipe>=0.10.0
+
+# Video processing
+opencv-python>=4.8.0
+numpy>=1.24.0
+
+# Virtual camera output
+pyvirtualcam>=0.10.0
+
+# Screen capture (cross-platform)
+mss>=9.0.0
+
+# GUI (optional, for controls)
+PyQt5>=5.15.0
+
+# CLI
+click>=8.0.0
+
+# Configuration
+pyyaml>=6.0

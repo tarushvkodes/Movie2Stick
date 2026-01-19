@@ -171,7 +171,15 @@ class PoseKeypoints:
 
 
 class PoseDetector:
-    """Real-time pose detector using MediaPipe Pose."""
+    """Real-time pose detector using MediaPipe PoseLandmarker (Tasks API)."""
+    
+    # Model URL for automatic download
+    MODEL_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task"
+    MODEL_URLS = {
+        0: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
+        1: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task",
+        2: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task",
+    }
     
     def __init__(
         self,
@@ -194,17 +202,99 @@ class PoseDetector:
                 "Install it with: pip install mediapipe"
             )
         
-        self.mp_pose = mp.solutions.pose
-        self.pose = self.mp_pose.Pose(
-            static_image_mode=False,
-            model_complexity=model_complexity,
-            enable_segmentation=enable_segmentation,
-            min_detection_confidence=min_detection_confidence,
+        self.model_complexity = model_complexity
+        self.min_detection_confidence = min_detection_confidence
+        self.min_tracking_confidence = min_tracking_confidence
+        
+        # Download model if needed
+        model_path = self._get_model_path()
+        
+        # Create PoseLandmarker using Tasks API
+        BaseOptions = mp.tasks.BaseOptions
+        PoseLandmarker = mp.tasks.vision.PoseLandmarker
+        PoseLandmarkerOptions = mp.tasks.vision.PoseLandmarkerOptions
+        VisionRunningMode = mp.tasks.vision.RunningMode
+        
+        options = PoseLandmarkerOptions(
+            base_options=BaseOptions(model_asset_path=model_path),
+            running_mode=VisionRunningMode.IMAGE,
+            min_pose_detection_confidence=min_detection_confidence,
             min_tracking_confidence=min_tracking_confidence,
+            num_poses=5,  # Support multiple poses
+            output_segmentation_masks=enable_segmentation,
         )
         
-        # For multi-person detection
-        self.mp_holistic = None  # Reserved for future multi-person support
+        self.landmarker = PoseLandmarker.create_from_options(options)
+    
+    def _get_model_path(self) -> str:
+        """Get or download the model file.
+        
+        Returns:
+            Path to the model file
+        """
+        import os
+        import urllib.request
+        import ssl
+        
+        # Create cache directory
+        cache_dir = os.path.expanduser("~/.cache/movie2stick/models")
+        os.makedirs(cache_dir, exist_ok=True)
+        
+        # Model filename based on complexity
+        model_names = {
+            0: "pose_landmarker_lite.task",
+            1: "pose_landmarker_full.task",
+            2: "pose_landmarker_heavy.task",
+        }
+        
+        model_name = model_names.get(self.model_complexity, model_names[1])
+        model_path = os.path.join(cache_dir, model_name)
+        
+        # Check if model already exists
+        if os.path.exists(model_path):
+            return model_path
+        
+        # Try to download
+        model_url = self.MODEL_URLS.get(self.model_complexity, self.MODEL_URLS[1])
+        print(f"Downloading pose model: {model_name}...")
+        print(f"From: {model_url}")
+        
+        try:
+            # Create an SSL context that doesn't verify certificates (for problematic networks)
+            context = ssl.create_default_context()
+            
+            # Create a request with a user agent
+            request = urllib.request.Request(
+                model_url,
+                headers={'User-Agent': 'Mozilla/5.0 (Movie2Stick)'}
+            )
+            
+            with urllib.request.urlopen(request, context=context, timeout=120) as response:
+                with open(model_path, 'wb') as f:
+                    f.write(response.read())
+            
+            print(f"Model downloaded to: {model_path}")
+            return model_path
+            
+        except Exception as e:
+            # Provide helpful error message with manual download instructions
+            error_msg = f"""
+Failed to download pose model automatically: {e}
+
+Please download the model manually:
+1. Download from: {model_url}
+2. Save to: {model_path}
+
+Alternatively, you can set the MODEL_PATH environment variable:
+  export MOVIE2STICK_MODEL_PATH=/path/to/pose_landmarker.task
+"""
+            # Check if user provided a custom model path
+            custom_path = os.environ.get('MOVIE2STICK_MODEL_PATH')
+            if custom_path and os.path.exists(custom_path):
+                print(f"Using custom model path: {custom_path}")
+                return custom_path
+            
+            raise RuntimeError(error_msg)
         
     def detect(self, frame: np.ndarray) -> List[PoseKeypoints]:
         """Detect poses in a frame.
@@ -216,31 +306,39 @@ class PoseDetector:
             List of PoseKeypoints objects for each detected person
         """
         # Convert BGR to RGB for MediaPipe
-        rgb_frame = frame[:, :, ::-1]
+        rgb_frame = frame[:, :, ::-1].copy()
         
-        results = self.pose.process(rgb_frame)
+        # Create MediaPipe Image
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+        
+        # Detect poses
+        results = self.landmarker.detect(mp_image)
         
         poses = []
         if results.pose_landmarks:
-            landmarks = np.array([
-                [lm.x, lm.y, lm.z] for lm in results.pose_landmarks.landmark
-            ])
-            visibility = np.array([
-                lm.visibility for lm in results.pose_landmarks.landmark
-            ])
-            
-            pose = PoseKeypoints(
-                landmarks=landmarks,
-                visibility=visibility,
-                image_shape=(frame.shape[0], frame.shape[1])
-            )
-            poses.append(pose)
+            for pose_landmarks in results.pose_landmarks:
+                landmarks = np.array([
+                    [lm.x, lm.y, lm.z] for lm in pose_landmarks
+                ])
+                # Use presence as visibility (Tasks API uses presence)
+                visibility = np.array([
+                    lm.visibility if hasattr(lm, 'visibility') else lm.presence
+                    for lm in pose_landmarks
+                ])
+                
+                pose = PoseKeypoints(
+                    landmarks=landmarks,
+                    visibility=visibility,
+                    image_shape=(frame.shape[0], frame.shape[1])
+                )
+                poses.append(pose)
         
         return poses
     
     def close(self):
         """Release resources."""
-        self.pose.close()
+        if hasattr(self, 'landmarker') and self.landmarker:
+            self.landmarker.close()
     
     def __enter__(self):
         return self
@@ -251,10 +349,9 @@ class PoseDetector:
 
 
 class MultiPoseDetector:
-    """Multi-person pose detector using MediaPipe Pose with tracking.
+    """Multi-person pose detector using MediaPipe PoseLandmarker.
     
-    Uses a combination of detection and tracking to handle multiple people.
-    This is a workaround since MediaPipe Pose only detects one person at a time.
+    The new MediaPipe Tasks API natively supports multiple pose detection.
     """
     
     def __init__(
@@ -277,8 +374,7 @@ class MultiPoseDetector:
         
         self.max_people = max_people
         
-        # Use Holistic for multi-person (future enhancement)
-        # For now, use single-person Pose detector
+        # The new PoseLandmarker API natively supports multi-person detection
         self.detector = PoseDetector(
             model_complexity=model_complexity,
             min_detection_confidence=min_detection_confidence,
@@ -288,21 +384,16 @@ class MultiPoseDetector:
     def detect(self, frame: np.ndarray) -> List[PoseKeypoints]:
         """Detect multiple poses in a frame.
         
-        Currently delegates to single-person detection.
-        Multi-person support can be added using segmentation and ROI detection.
+        Uses the MediaPipe PoseLandmarker which supports multiple poses natively.
         
         Args:
             frame: BGR image frame
             
         Returns:
-            List of detected poses
+            List of detected poses (up to max_people)
         """
-        # For now, use single-person detection
-        # TODO: Implement multi-person detection using:
-        # 1. Person detection (e.g., YOLO, SSD)
-        # 2. ROI extraction for each person
-        # 3. Pose estimation on each ROI
-        return self.detector.detect(frame)
+        poses = self.detector.detect(frame)
+        return poses[:self.max_people]  # Limit to max_people
     
     def close(self):
         """Release resources."""

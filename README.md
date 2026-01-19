@@ -45,7 +45,33 @@ cd Movie2Stick
 pip install -r requirements.txt
 ```
 
-### 3. Set Up Virtual Camera (Optional)
+### 3. Download Pose Model
+
+On first run, Movie2Stick will automatically download the MediaPipe pose model. If automatic download fails, you can download manually:
+
+```bash
+# Create model directory
+mkdir -p ~/.cache/movie2stick/models
+
+# Download lite model (faster, less accurate)
+curl -o ~/.cache/movie2stick/models/pose_landmarker_lite.task \
+  https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task
+
+# OR download full model (recommended)
+curl -o ~/.cache/movie2stick/models/pose_landmarker_full.task \
+  https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task
+
+# OR download heavy model (most accurate, slowest)
+curl -o ~/.cache/movie2stick/models/pose_landmarker_heavy.task \
+  https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task
+```
+
+You can also set a custom model path:
+```bash
+export MOVIE2STICK_MODEL_PATH=/path/to/your/pose_landmarker.task
+```
+
+### 4. Set Up Virtual Camera (Optional)
 
 **Windows/macOS:**
 - Install [OBS Studio](https://obsproject.com/)
@@ -60,7 +86,7 @@ sudo apt-get install v4l2loopback-dkms
 sudo modprobe v4l2loopback devices=1 video_nr=10 card_label="Movie2Stick" exclusive_caps=1
 ```
 
-### 4. Install the Package
+### 5. Install the Package
 
 ```bash
 pip install -e .
